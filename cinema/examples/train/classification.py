@@ -83,22 +83,70 @@ class ACDCDataset(Dataset):
 
 def get_dataloaders(config: DictConfig) -> tuple[DataLoader, DataLoader]:
     """Get the dataloaders."""
-    data_dir = Path(
-        snapshot_download(repo_id="mathpluscode/ACDC", allow_patterns=["*.nii.gz", "*.csv"], repo_type="dataset")
-    )
+    # Read data_dir from config - check both top-level and experiment level
+    data_dir = None
+    
+    # Try top-level data_dir first (from command line override)
+    if hasattr(config, "data_dir") and config.data_dir:
+        data_dir = Path(config.data_dir)
+        logger.info(f"Using data_dir from config (top-level): {data_dir}")
+    # Try experiment.data_dir (from classification.yaml)
+    elif hasattr(config, "experiment") and hasattr(config.experiment, "data_dir") and config.experiment.data_dir:
+        data_dir = Path(config.experiment.data_dir)
+        logger.info(f"Using data_dir from experiment config: {data_dir}")
+    
+    # If still not found, download from HuggingFace
+    if data_dir is None:
+        logger.info("No data_dir found in config. Downloading ACDC dataset from HuggingFace...")
+        data_dir = Path(
+            snapshot_download(repo_id="mathpluscode/ACDC", allow_patterns=["*.nii.gz", "*.csv"], repo_type="dataset")
+        )
+    
+    logger.info(f"Loading data from: {data_dir}")
     meta_df = pd.read_csv(data_dir / "train.csv")
 
-    val_pids = meta_df.groupby("pathology").sample(n=2, random_state=0)["pid"].tolist()
+    # Determine classification task
+    class_col = config.data.class_column
+    is_binary = class_col == "hf_label"
+    
+    if is_binary:
+        logger.info(f"Binary classification task: {class_col}")
+    else:
+        logger.info(f"Multi-class classification task: {class_col}")
+    
+    # Load predefined validation split from dataset
+    val_csv = data_dir / "val.csv"
+    if val_csv.exists():
+        val_meta_df = pd.read_csv(val_csv)
+        val_pids = val_meta_df["pid"].tolist()
+        logger.info(f"Loaded predefined validation split: {len(val_pids)} patients")
+    else:
+        # Fallback to stratified sampling if val.csv doesn't exist
+        try:
+            groupby_col = "hf_label" if is_binary else class_col
+            val_pids = meta_df.groupby(groupby_col).sample(n=2, random_state=0)["pid"].tolist()
+            logger.warning(f"No val.csv found. Using stratified sampling by {groupby_col}")
+        except ValueError as e:
+            logger.warning(f"Could not stratify by {groupby_col}: {e}. Using random split.")
+            val_pids = meta_df.sample(frac=0.2, random_state=0)["pid"].tolist()
+    
     train_meta_df = meta_df[~meta_df["pid"].isin(val_pids)].reset_index(drop=True)
     if config.data.max_n_samples > 0:
         train_meta_df = train_meta_df.head(config.data.max_n_samples)
         logger.warning(f"Using {len(train_meta_df)} samples instead of {config.data.max_n_samples}.")
-    val_meta_df = meta_df[meta_df["pid"].isin(val_pids)].reset_index(drop=True)
+    val_meta_df = val_meta_df[val_meta_df["pid"].isin(val_pids)].reset_index(drop=True)
+
+    print("\nTraining class distribution:")
+    print(train_meta_df[class_col].value_counts())
+    print()
+    
+    print("\nValidation class distribution:")
+    print(val_meta_df[class_col].value_counts())
+    print()
 
     patch_size_dict = {"sax": config.data.sax.patch_size}
     rotate_range_dict = {"sax": config.transform.sax.rotate_range}
     translate_range_dict = {"sax": config.transform.sax.translate_range}
-    class_col = config.data.class_column
     classes = config.data[class_col]
     train_transform = Compose(
         [
@@ -147,7 +195,7 @@ def get_dataloaders(config: DictConfig) -> tuple[DataLoader, DataLoader]:
         classes=classes,
     )
     val_dataset = ACDCDataset(
-        data_dir=data_dir / "train",
+        data_dir=data_dir / "val",  # Changed from "train" to "val"
         meta_df=val_meta_df,
         transform=val_transform,
         class_col=class_col,
@@ -272,16 +320,30 @@ def run(config: DictConfig) -> None:
                 logits = model({"sax": batch["sax_image"].to(device)})
                 pred_logits.append(logits)
                 true_labels.append(batch["label"])
+        
         pred_logits = torch.cat(pred_logits, dim=0).cpu().to(dtype=torch.float32)
         pred_probs = F.softmax(pred_logits, dim=1).numpy()
         true_labels = torch.cat(true_labels, dim=0).cpu().to(dtype=torch.float32).numpy()
-        roc_auc = roc_auc_score(
-            y_true=true_labels,
-            y_score=pred_probs,
-            average="macro",
-            multi_class="ovo",
-            labels=list(range(pred_probs.shape[1])),
-        )
+        
+        # Handle binary vs multi-class ROC-AUC
+        n_classes = pred_probs.shape[1]
+        if n_classes == 2:
+            # Binary classification: use probability of positive class only
+            roc_auc = roc_auc_score(
+                y_true=true_labels,
+                y_score=pred_probs[:, 1],  # Probability of class 1 (positive class)
+                average="macro",
+            )
+        else:
+            # Multi-class: use all class probabilities
+            roc_auc = roc_auc_score(
+                y_true=true_labels,
+                y_score=pred_probs,
+                average="macro",
+                multi_class="ovo",
+                labels=list(range(n_classes)),
+            )
+        
         metrics = {"val_roc_auc": roc_auc}
         metrics = {k: f"{v:.2e}" for k, v in metrics.items()}
         logger.info(f"Validation metrics: {metrics}.")
