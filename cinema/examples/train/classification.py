@@ -27,6 +27,7 @@ from torch.nn import functional as F  # noqa: N812
 from torch.utils.data import DataLoader, Dataset, RandomSampler, SequentialSampler
 
 from cinema import ConvViT
+from cinema.classification.train import classification_metrics
 from cinema.convvit import param_groups_lr_decay
 from cinema.device import get_amp_dtype_and_device
 from cinema.log import get_logger
@@ -262,6 +263,24 @@ def run(config: DictConfig) -> None:
     optimizer = torch.optim.AdamW(param_groups, lr=config.train.lr, betas=config.train.betas)
     loss_scaler = GradScaler()
 
+    # Compute class weights for imbalanced dataset
+    train_labels = []
+    for batch in train_dataloader:
+        train_labels.extend(batch["label"].tolist())
+    class_counts = torch.bincount(torch.tensor(train_labels))
+    
+    # Calculate imbalance ratio (max/min class count)
+    imbalance_ratio = class_counts.max().item() / class_counts.min().item()
+    
+    if imbalance_ratio > 1.5:  # Only apply weights if significantly imbalanced
+        class_weights = 1.0 / class_counts.float()
+        class_weights = class_weights / class_weights.sum() * len(class_weights)  # Normalize
+        class_weights = class_weights.to(device)
+        logger.info(f"Class imbalance detected (ratio {imbalance_ratio:.2f}). Applying class weights: {class_weights.tolist()}")
+    else:
+        class_weights = None
+        logger.info(f"Dataset is balanced (ratio {imbalance_ratio:.2f}). Using uniform weights.")
+    
     # train
     logger.info("Start training.")
     early_stop = EarlyStopping(
@@ -287,6 +306,7 @@ def run(config: DictConfig) -> None:
                 loss = F.cross_entropy(
                     logits,
                     label,
+                    weight=class_weights,  # Apply class weights if dataset is imbalanced (None = uniform)
                     label_smoothing=0.1,
                 )
                 metrics = {"train_cross_entropy_loss": loss.item()}
@@ -324,37 +344,35 @@ def run(config: DictConfig) -> None:
         pred_logits = torch.cat(pred_logits, dim=0).cpu().to(dtype=torch.float32)
         pred_probs = F.softmax(pred_logits, dim=1).numpy()
         true_labels = torch.cat(true_labels, dim=0).cpu().to(dtype=torch.float32).numpy()
+        pred_labels = torch.argmax(pred_logits, dim=1).numpy()
         
-        # Handle binary vs multi-class ROC-AUC
-        n_classes = pred_probs.shape[1]
-        if n_classes == 2:
-            # Binary classification: use probability of positive class only
-            roc_auc = roc_auc_score(
-                y_true=true_labels,
-                y_score=pred_probs[:, 1],  # Probability of class 1 (positive class)
-                average="macro",
-            )
-        else:
-            # Multi-class: use all class probabilities
-            roc_auc = roc_auc_score(
-                y_true=true_labels,
-                y_score=pred_probs,
-                average="macro",
-                multi_class="ovo",
-                labels=list(range(n_classes)),
-            )
+        # Compute comprehensive classification metrics (ROC-AUC, MCC, F1, accuracy, etc.)
+        metrics = classification_metrics(
+            true_labels=true_labels,
+            pred_labels=pred_labels,
+            pred_probs=pred_probs,
+        )
         
-        metrics = {"val_roc_auc": roc_auc}
-        metrics = {k: f"{v:.2e}" for k, v in metrics.items()}
-        logger.info(f"Validation metrics: {metrics}.")
+        # Add val_ prefix for all metrics
+        val_metrics = {f"val_{k}": v for k, v in metrics.items()}
+        val_metrics_formatted = {k: f"{v:.2e}" for k, v in val_metrics.items()}
+        logger.info(f"Validation metrics: {val_metrics_formatted}.")
 
         # save model checkpoint
         ckpt_path = ckpt_dir / f"ckpt_{epoch}.safetensors"
         save_file(model.state_dict(), ckpt_path)
         logger.info(f"Saved checkpoint of epoch {epoch} at {ckpt_path} after {n_samples} samples.")
 
-        # early stopping
-        early_stop.update(-roc_auc)
+        # early stopping - use the configured metric
+        early_stop_metric_name = config.train.early_stopping.metric
+        if early_stop_metric_name not in val_metrics:
+            logger.warning(
+                f"Configured early stopping metric '{early_stop_metric_name}' not found in computed metrics. "
+                f"Available metrics: {list(val_metrics.keys())}. Falling back to 'val_roc_auc'."
+            )
+            early_stop_metric_name = "val_roc_auc"
+        early_stop_metric_value = val_metrics[early_stop_metric_name]
+        early_stop.update(-early_stop_metric_value)
         if early_stop.should_stop:
             logger.info(
                 f"Met early stopping criteria with {config.train.early_stopping.metric} = "
