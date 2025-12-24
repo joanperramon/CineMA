@@ -272,7 +272,7 @@ def run(config: DictConfig) -> None:
     # Calculate imbalance ratio (max/min class count)
     imbalance_ratio = class_counts.max().item() / class_counts.min().item()
     
-    if imbalance_ratio > 1.5:  # Only apply weights if significantly imbalanced
+    if imbalance_ratio > 2.0:  # Only apply weights if significantly imbalanced (>2:1 ratio)
         class_weights = 1.0 / class_counts.float()
         class_weights = class_weights / class_weights.sum() * len(class_weights)  # Normalize
         class_weights = class_weights.to(device)
