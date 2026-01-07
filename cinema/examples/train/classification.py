@@ -283,10 +283,14 @@ def run(config: DictConfig) -> None:
     
     # train
     logger.info("Start training.")
+    # Get mode from config, default to 'max' for classification metrics
+    early_stop_mode = config.train.early_stopping.get('mode', 'max')
     early_stop = EarlyStopping(
         min_delta=config.train.early_stopping.min_delta,
         patience=config.train.early_stopping.patience,
+        mode=early_stop_mode,
     )
+    logger.info(f"Early stopping: metric={config.train.early_stopping.metric}, mode={early_stop_mode}")
     n_samples = 0
     for epoch in range(config.train.n_epochs):
         optimizer.zero_grad()
@@ -372,7 +376,7 @@ def run(config: DictConfig) -> None:
             )
             early_stop_metric_name = "val_roc_auc"
         early_stop_metric_value = val_metrics[early_stop_metric_name]
-        early_stop.update(-early_stop_metric_value)
+        early_stop.update(early_stop_metric_value)
         if early_stop.should_stop:
             logger.info(
                 f"Met early stopping criteria with {config.train.early_stopping.metric} = "

@@ -295,22 +295,32 @@ def load_checkpoint_and_optimizer(
 
 
 class EarlyStopping:
-    """Early stopping to avoid overfitting during training, by monitoring a metric that should be minimized."""
+    """Early stopping to avoid overfitting during training, by monitoring a metric."""
 
     def __init__(
         self,
         min_delta: float,
         patience: int,
+        mode: str = "min",
     ) -> None:
         """Initialize the early stopping.
 
         Args:
             min_delta: minimum change in the monitored quantity to qualify as an improvement.
             patience: number of epochs with no improvement after which training will be stopped.
+            mode: 'min' for metrics where lower is better (loss), 'max' for metrics where higher is better (accuracy, ROC AUC, MCC).
         """
         self.min_delta = min_delta
-        self.best_metric = float("inf")
         self.patience = patience
+        self.mode = mode
+        
+        if mode == "min":
+            self.best_metric = float("inf")
+        elif mode == "max":
+            self.best_metric = float("-inf")
+        else:
+            raise ValueError(f"Mode must be 'min' or 'max', got '{mode}'")
+        
         self.patience_count = 0
         self.should_stop = False
         self.has_improved = False
@@ -321,8 +331,14 @@ class EarlyStopping:
         Args:
             metric: metric to compare.
         """
-        self.has_improved = self.best_metric > metric  # not necessarily improved enough
-        if self.has_improved and self.best_metric >= metric + self.min_delta:
+        if self.mode == "min":
+            self.has_improved = metric < self.best_metric
+            improved_enough = self.best_metric - metric >= self.min_delta
+        else:  # mode == "max"
+            self.has_improved = metric > self.best_metric
+            improved_enough = metric - self.best_metric >= self.min_delta
+        
+        if self.has_improved and improved_enough:
             self.best_metric = metric
             self.patience_count = 0
         else:

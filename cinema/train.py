@@ -274,10 +274,13 @@ def run_train(  # noqa: C901
     logger.info("Start training.")
     patch_size_dict = {v: config.data.sax.patch_size if v == "sax" else config.data.lax.patch_size for v in views}
     spacing_dict = {v: config.data.sax.spacing if v == "sax" else config.data.lax.spacing for v in views}
+    early_stop_mode = config.train.early_stopping.get('mode', 'max')
     early_stop = EarlyStopping(
         min_delta=config.train.early_stopping.min_delta,
         patience=config.train.early_stopping.patience,
+        mode=early_stop_mode,
     )
+    logger.info(f"Early stopping: metric={config.train.early_stopping.metric}, mode={early_stop_mode}")
     n_samples = 0
     saved_ckpt_paths = []
     for epoch in range(config.train.n_epochs):
@@ -321,8 +324,6 @@ def run_train(  # noqa: C901
 
         # early stopping update
         early_stop_metric = val_metrics[config.train.early_stopping.metric]
-        if config.train.early_stopping.mode == "max":
-            early_stop_metric = -early_stop_metric
         early_stop.update(early_stop_metric)
         logger.info(
             f"Early stop updated {epoch}: "
