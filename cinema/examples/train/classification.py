@@ -272,14 +272,21 @@ def run(config: DictConfig) -> None:
     # Calculate imbalance ratio (max/min class count)
     imbalance_ratio = class_counts.max().item() / class_counts.min().item()
     
-    if imbalance_ratio > 2.0:  # Only apply weights if significantly imbalanced (>2:1 ratio)
+    # Get class weight settings from config, with defaults
+    use_class_weights = config.train.get('use_class_weights', True)  # Default: enabled
+    class_weight_threshold = config.train.get('class_weight_threshold', 1.2)  # Default: 1.2:1 ratio
+    
+    if use_class_weights and imbalance_ratio > class_weight_threshold:
         class_weights = 1.0 / class_counts.float()
         class_weights = class_weights / class_weights.sum() * len(class_weights)  # Normalize
         class_weights = class_weights.to(device)
         logger.info(f"Class imbalance detected (ratio {imbalance_ratio:.2f}). Applying class weights: {class_weights.tolist()}")
     else:
         class_weights = None
-        logger.info(f"Dataset is balanced (ratio {imbalance_ratio:.2f}). Using uniform weights.")
+        if not use_class_weights:
+            logger.info(f"Class weights disabled in config. Using uniform weights.")
+        else:
+            logger.info(f"Dataset is balanced (ratio {imbalance_ratio:.2f} <= {class_weight_threshold}). Using uniform weights.")
     
     # train
     logger.info("Start training.")
