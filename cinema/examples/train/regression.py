@@ -84,9 +84,25 @@ class ACDCDataset(Dataset):
 
 def get_dataloaders(config: DictConfig) -> tuple[DataLoader, DataLoader]:
     """Get the dataloaders."""
-    data_dir = Path(
-        snapshot_download(repo_id="mathpluscode/ACDC", allow_patterns=["*.nii.gz", "*.csv"], repo_type="dataset")
-    )
+    # Read data_dir from config - check both top-level and experiment level
+    data_dir = None
+    
+    # Try top-level data_dir first (from command line override)
+    if hasattr(config, "data_dir") and config.data_dir:
+        data_dir = Path(config.data_dir)
+        logger.info(f"Using data_dir from config (top-level): {data_dir}")
+    # Try experiment.data_dir (from regression.yaml)
+    elif hasattr(config, "experiment") and hasattr(config.experiment, "data_dir") and config.experiment.data_dir:
+        data_dir = Path(config.experiment.data_dir)
+        logger.info(f"Using data_dir from experiment config: {data_dir}")
+    
+    # If still not found, download from HuggingFace
+    if data_dir is None:
+        data_dir = Path(
+            snapshot_download(repo_id="mathpluscode/ACDC", allow_patterns=["*.nii.gz", "*.csv"], repo_type="dataset")
+        )
+        logger.info(f"Downloaded data from HuggingFace to: {data_dir}")
+    
     meta_df = pd.read_csv(data_dir / "train.csv")
 
     val_pids = meta_df.groupby("pathology").sample(n=2, random_state=0)["pid"].tolist()
