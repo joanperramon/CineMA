@@ -6,9 +6,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import hydra
+import nibabel as nib
 import numpy as np
 import pandas as pd
-import SimpleITK as sitk  # noqa: N813
 import torch
 from huggingface_hub import snapshot_download
 from monai.transforms import (
@@ -71,8 +71,14 @@ class ACDCDataset(Dataset):
 
         ed_image_path = pid_dir / f"{pid}_sax_ed.nii.gz"
         es_image_path = pid_dir / f"{pid}_sax_es.nii.gz"
-        ed_image = np.transpose(sitk.GetArrayFromImage(sitk.ReadImage(ed_image_path)))  # (x, y, z)
-        es_image = np.transpose(sitk.GetArrayFromImage(sitk.ReadImage(es_image_path)))
+        
+        # Use nibabel which is more lenient with direction cosines
+        ed_img = nib.load(str(ed_image_path))
+        es_img = nib.load(str(es_image_path))
+        
+        # Get data arrays - nibabel already returns in (x, y, z) format
+        ed_image = ed_img.get_fdata()
+        es_image = es_img.get_fdata()
         data = {
             "pid": pid,
             "sax_image": torch.from_numpy(np.stack([ed_image, es_image], axis=0)),  # (2, x, y, z)
@@ -104,13 +110,13 @@ def get_dataloaders(config: DictConfig) -> tuple[DataLoader, DataLoader]:
         logger.info(f"Downloaded data from HuggingFace to: {data_dir}")
     
     meta_df = pd.read_csv(data_dir / "train.csv")
-
-    val_pids = meta_df.groupby("pathology").sample(n=2, random_state=0)["pid"].tolist()
-    train_meta_df = meta_df[~meta_df["pid"].isin(val_pids)].reset_index(drop=True)
+    val_meta_df = pd.read_csv(data_dir / "val.csv")
+    
+    # Use provided train/val split instead of sampling
+    train_meta_df = meta_df.copy()
     if config.data.max_n_samples > 0:
         train_meta_df = train_meta_df.head(config.data.max_n_samples)
         logger.warning(f"Using {len(train_meta_df)} samples instead of {config.data.max_n_samples}.")
-    val_meta_df = meta_df[meta_df["pid"].isin(val_pids)].reset_index(drop=True)
 
     patch_size_dict = {"sax": config.data.sax.patch_size}
     rotate_range_dict = {"sax": config.transform.sax.rotate_range}
@@ -166,7 +172,7 @@ def get_dataloaders(config: DictConfig) -> tuple[DataLoader, DataLoader]:
         reg_std=reg_std,
     )
     val_dataset = ACDCDataset(
-        data_dir=data_dir / "train",
+        data_dir=data_dir / "val",
         meta_df=val_meta_df,
         transform=val_transform,
         reg_col=reg_col,

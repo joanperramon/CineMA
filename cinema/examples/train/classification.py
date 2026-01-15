@@ -6,9 +6,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import hydra
+import nibabel as nib
 import numpy as np
 import pandas as pd
-import SimpleITK as sitk  # noqa: N813
 import torch
 from huggingface_hub import snapshot_download
 from monai.transforms import (
@@ -71,8 +71,14 @@ class ACDCDataset(Dataset):
 
         ed_image_path = pid_dir / f"{pid}_sax_ed.nii.gz"
         es_image_path = pid_dir / f"{pid}_sax_es.nii.gz"
-        ed_image = np.transpose(sitk.GetArrayFromImage(sitk.ReadImage(ed_image_path)))  # (x, y, z)
-        es_image = np.transpose(sitk.GetArrayFromImage(sitk.ReadImage(es_image_path)))
+        
+        # Use nibabel (more lenient with direction cosines)
+        ed_img = nib.load(str(ed_image_path))
+        es_img = nib.load(str(es_image_path))
+        
+        # Get data arrays - nibabel returns in (x, y, z) format
+        ed_image = ed_img.get_fdata()
+        es_image = es_img.get_fdata()
         data = {
             "pid": pid,
             "sax_image": torch.from_numpy(np.stack([ed_image, es_image], axis=0)),  # (2, x, y, z)
