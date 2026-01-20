@@ -3,27 +3,31 @@ seed: 0
 grad_ckpt: True
 
 logging:
-  dir: wandb
+  dir: ./outputs/regression/mnms/${now:%Y-%m-%d}/${now:%H-%M-%S}_${data.regression_column}_seed${seed}
   wandb:
-    project: null
+    project: cinema-regression-mnms
     entity: null
+    name: ${data.regression_column}_seed${seed}_${now:%Y%m%d_%H%M%S}
 
 data:
   name: mnms
-  dir: ~/.cache/cinema_datasets/mnms/processed
+  dir: /home/joan/.cache/cinema_datasets/mnms/processed
   sax:
     spacing: [1.0, 1.0, 10.0]
     patch_size: [192, 192, 16]
     in_chans: 1
   max_n_samples: -1
   proportion: 1.0
-  regression_column: "ef" # ef, age
+  regression_column: "lv_ef" # ef, age
   age:
     mean: 52.026666666666664
     std: 18.760570771166726
-  ef:
-    mean: 39.75061820807878
-    std: 9.459011847661206
+  # lv_ef:
+  #   mean: 39.75061820807878
+  #   std: 9.459011847661206
+  lv_ef:
+    mean: 54.673720
+    std: 14.766004
 
 transform:
   prob: 0.5
@@ -44,19 +48,19 @@ train:
   min_lr: 1e-5
   n_warmup_epochs: 10
   n_epochs: 800
-  max_n_ckpts: 1
-  batch_size: 64
+  max_n_ckpts: 5
+  batch_size: 28
   batch_size_per_device: 4
-  eval_interval: 20
+  eval_interval: 10
   early_stopping:
     metric: "val_mae"
     mode: "min"
-    patience: 5
+    patience: 10
     min_delta: 1e-4
 
 model:
   name: convvit # convvit, resnet
-  ckpt_path: null
+  ckpt_path: /home/joan/.cache/huggingface/hub/models--mathpluscode--CineMA/snapshots/b1251ee50423bceeca84c080782fc3bc7756dea6/pretrained/cinema.safetensors
   freeze_pretrained: False
   views: sax
   n_frames: 2
